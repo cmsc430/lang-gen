@@ -7,7 +7,10 @@
          (struct-out TAny)
          (struct-out TBot)
          (struct-out TInt)
+         (struct-out TNat)
          (struct-out TBool)
+         (struct-out TChar)
+         (struct-out TEOF)
          (struct-out TFun)
          T->)
 
@@ -16,7 +19,10 @@
 (struct TBot () #:prefab)
 
 (struct TInt () #:prefab)
+(struct TNat () #:prefab)
 (struct TBool () #:prefab)
+(struct TChar () #:prefab)
+(struct TEOF () #:prefab)
 
 (struct TFun (domain optional rest? codomain) #:prefab #:extra-constructor-name T->*)
 
@@ -36,6 +42,9 @@
     ;; Reflexivity
     [(t t) #t]
 
+    ;; Integers subsume the naturals
+    [((TInt) (TNat)) #t]
+
     ;; Functions subsume if domains match
     [((TFun d1 d1-opt d1-rest? c1) (TFun d2 d2-opt d2-rest? c2))
      (and (type-subsumes? c1 c2)
@@ -49,11 +58,10 @@
 (define (base-type? t)
   (match t
     [(TInt) #t]
+    [(TNat) #t]
     [(TBool) #t]
+    [(TEOF) #t]
     [_ #f]))
-
-(define (value? e)
-  (or (boolean? e) (number? e)))
 
 ;; Environment helper functions
 (define (env-add id type env)
@@ -94,12 +102,14 @@
                                 env)])
     (gen:sized
      (λ (size)
-       (gen:let ([m (gen:one-of candidates)]
-                 [dom (gen:function-domain (cdr m))]
-                 [es (gen:resize
-                      (gen:tuple* (map (curry gen:expr env) dom))
-                      (quotient size (add1 (length dom))))])
-        `(,(car m) ,@es))))))
+       (if (empty? candidates)
+           (gen:resize (gen:expr env codomain) (quotient size 2))
+           (gen:let ([m (gen:one-of candidates)]
+                     [dom (gen:function-domain (cdr m))]
+                     [es (gen:resize
+                          (gen:tuple* (map (curry gen:expr env) dom))
+                          (quotient size (add1 (length dom))))])
+                    `(,(car m) ,@es)))))))
 
 (define (gen:if gen:expr env type)
   (gen:sized
@@ -174,7 +184,8 @@
    (λ (size)
      (gen:let ([n (gen:map gen:natural (compose exact-floor sqrt))])
               (let ([datum-gen (gen:map (gen:list (gen:val (TAny)) #:max-length n)
-                                        remove-duplicates)]
+                                        (λ (l) (filter (λ (v) (not (equal? v 'eof)))
+                                                       (remove-duplicates l))))]
                     [body-gen (gen:resize (gen:expr env type)
                                           (quotient (* size 3) (* 4 (max 1 n))))])
                 (gen:let ([datums (gen:list-len datum-gen n)]
@@ -184,41 +195,20 @@
                           `(case ,e-pred ,@(map list datums e-bodies)
                              [else ,e-else])))))))
 
-;; Env Type natural -> (generator S-Expr)
-#;(define (gen:expr env type)
-  (gen:no-shrink
-   (gen:sized
-    (λ (size)
-      (if (zero? size)
-          (gen:simple-expr env type)
-          (gen:frequency
-           (append
-            (list (cons 1 (gen:simple-expr env type))
-                  (cons (* 2 size) (gen:app env type)))
-            (if (>= size 2)
-                (list  (cons size (gen:if env type))
-                       (cons (quotient size 2) (gen:let-exp env type))
-                       (cons (quotient size 2) (gen:let*-exp env type)))
-                empty)
-            (if (>= size 4)
-                (list (cons (quotient size 4) (gen:cond env type))
-                      (cons (quotient size 4) (gen:case env type)))
-                empty))))))
-   #;shrink-expr))
-
-
-;; values ::= integers | booleans
-
-;; forms ::= app | if | cond | case | let1 | let | let*
-
-;; ops ::= add1 | sub1 | abs | not | zero? | integer? | boolean?
-;;       | unary- un/binary- binary+ +
+(define (gen:begin gen:expr env type)
+  (gen:sized
+   (λ (size)
+     (gen:let ([e1 (gen:resize (gen:expr env (TAny)) (quotient size 4))]
+               [e2 (gen:resize (gen:expr env type) (quotient (* 3 size) 4))])
+              `(begin ,e1 ,e2)))))
 
 (begin-for-syntax
   
   (define-syntax-class value-type
     (pattern (~or* (~datum 'integers)
-                   (~datum 'booleans))))
+                   (~datum 'booleans)
+                   (~datum 'characters)
+                   (~datum 'eof))))
 
   (define-syntax-class expr-form
     (pattern (~or* (~datum 'app)
@@ -227,16 +217,13 @@
                    (~datum 'case)
                    (~datum 'let1)
                    (~datum 'let)
-                   (~datum 'let*))))
+                   (~datum 'let*)
+                   (~datum 'begin))))
 
   (define-syntax-class expr-op
-    (pattern (~or* 'add1 'sub1 'abs 'not 'zero? 'integer? 'boolean?
-                   'unary- 'un/binary- 'binary+ '+))))
-
-;(define-syntax (build-op-env stx)
-;  (syntax-parse stx
-;    [(_) #'null]
-;    [(_ op:expr-op ops:expr-ops ...) #`(cons ,(lookup-op op) (build-op-env]
+    (pattern (~or* 'add1 'sub1 'abs 'not 'zero? 'integer? 'boolean? 'char? 'eof-object?
+                   'unary- 'binary- 'un/binary- 'binary+ '+
+                   'integer->char 'char->integer))))
 
 (define-syntax (lookup-op stx)
   (syntax-parse stx
@@ -247,21 +234,30 @@
     [(_ (~datum 'zero?)) #'(cons 'zero? (T-> (TInt) (TBool)))]
     [(_ (~datum 'integer?)) #'(cons 'integer? (T-> (TAny) (TBool)))]
     [(_ (~datum 'boolean?)) #'(cons 'boolean? (T-> (TAny) (TBool)))]
+    [(_ (~datum 'char?)) #'(cons 'char? (T-> (TAny) (TBool)))]
+    [(_ (~datum 'eof-object?)) #'(cons 'eof-object? (T-> (TAny) (TBool)))]
     [(_ (~datum 'unary-)) #'(cons '- (T-> (TInt) (TInt)))]
+    [(_ (~datum 'binary-)) #'(cons '- (T-> (TInt) (TInt) (TInt)))]
     [(_ (~datum 'un/binary-)) #'(cons '- (T->* (list (TInt)) (list (TInt)) #f (TInt)))]
     [(_ (~datum 'binary+)) #'(cons '+ (T-> (TInt) (TInt) (TInt)))]
-    [(_ (~datum '+)) #'(cons '+ (T->* '() '() (TInt) (TInt)))]))
+    [(_ (~datum '+)) #'(cons '+ (T->* '() '() (TInt) (TInt)))]
+    [(_ (~datum 'integer->char)) #'(cons 'integer->char (T-> (TInt) (TChar)))]
+    [(_ (~datum 'char->integer)) #'(cons 'char->integer (T-> (TChar) (TInt)))]))
 
 (define-syntax (lookup-type stx)
   (syntax-parse stx
     [(_ (~datum 'integers)) #'(TInt)]
-    [(_ (~datum 'booleans)) #'(TBool)]))
+    [(_ (~datum 'booleans)) #'(TBool)]
+    [(_ (~datum 'characters)) #'(TChar)]
+    [(_ (~datum 'eof)) #'(TEOF)]))
 
 (define-match-expander lookup-type-match
   (lambda (stx)
     (syntax-parse stx
       [(_ (~datum 'integers)) #'(TInt)]
-      [(_ (~datum 'booleans)) #'(TBool)])))
+      [(_ (~datum 'booleans)) #'(TBool)]
+      [(_ (~datum 'characters)) #'(TChar)]
+      [(_ (~datum 'eof)) #'(TEOF)])))
 
 (define-syntax (make-value-gen stx)
   (syntax-parse stx
@@ -269,8 +265,13 @@
      #'(gen:let ([x gen:real]
                  [sign (gen:map gen:real (λ (y) (if (<= y 0.5) -1 1)))])
                 (* sign (exact-floor (* (- (/ 1 x) 1) 2))))]
-    [(_ (~datum 'booleans))
-     #'gen:boolean]))
+    
+    [(_ (~datum 'booleans)) #'gen:boolean]
+
+    ;; TODO: wider character range
+    [(_ (~datum 'characters)) #'gen:char-alphanumeric]
+
+    [(_ (~datum 'eof)) #'(gen:const 'eof)]))
 
 (define-syntax-rule (make-gen:val gen:base-type gen:val vts ...)
   (lambda (type)
@@ -300,7 +301,8 @@
     [(_ size (~datum 'let)) #'(quotient size 2)]
     [(_ size (~datum 'let*)) #'(quotient size 2)]
     [(_ size (~datum 'cond)) #'(quotient size 4)]
-    [(_ size (~datum 'case)) #'(quotient size 4)]))
+    [(_ size (~datum 'case)) #'(quotient size 4)]
+    [(_ size (~datum 'begin)) #'(quotient size 2)]))
   
 (define-syntax (lookup-form-gen stx)
   (syntax-parse stx
@@ -310,7 +312,8 @@
     [(_ ge gbt _ (~datum 'let)) #'(curry gen:let-exp ge gbt)]
     [(_ ge gbt _ (~datum 'let*)) #'(curry gen:let*-exp ge gbt)]
     [(_ ge _ _ (~datum 'cond)) #'(curry gen:cond ge)]
-    [(_ ge _ gval (~datum 'case)) #'(curry gen:case ge gval)]))
+    [(_ ge _ gval (~datum 'case)) #'(curry gen:case ge gval)]
+    [(_ ge _ _ (~datum 'begin)) #'(curry gen:begin ge)]))
 
 (define-syntax-rule (make-gen:expr gen:expr gen:base-type gen:val fs ...)
   (lambda (env type)
