@@ -418,8 +418,8 @@
       ['binary-       (cons '- (TFun (basic-fun (TInt) (TInt) (TInt))))]
       ['un/binary-    (cons '- (TFun (full-fun (TInt) (list (TInt)) (list (TInt)) #f)))]
       ['-             (cons '- (TFun (full-fun (TInt) (list (TInt)) '() (TInt))))]
-      ['binary+       (cons '+ (TFun (case-fun (list (basic-fun (TInt) (TInt))
-                                                     (basic-fun (TNat) (TNat))))))]
+      ['binary+       (cons '+ (TFun (case-fun (list (basic-fun (TInt) (TInt) (TInt))
+                                                     (basic-fun (TNat) (TNat) (TNat))))))]
       ['+             (cons '+ (TFun (case-fun (list (full-fun (TInt) '() '() (TInt))
                                                      (full-fun (TNat) '() '() (TNat))))))]
       ['arithmetic-shift (cons 'arithmetic-shift (TFun (basic-fun (TInt) (TInt))))]
