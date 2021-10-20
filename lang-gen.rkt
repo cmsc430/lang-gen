@@ -422,7 +422,7 @@
                                                      (basic-fun (TNat) (TNat) (TNat))))))]
       ['+             (cons '+ (TFun (case-fun (list (full-fun (TInt) '() '() (TInt))
                                                      (full-fun (TNat) '() '() (TNat))))))]
-      ['arithmetic-shift (cons 'arithmetic-shift (TFun (basic-fun (TInt) (TInt))))]
+      ['arithmetic-shift (cons 'arithmetic-shift (TFun (basic-fun (TInt) (TInt) (TInt))))]
       ['<             (cons '< (TFun (basic-fun (TBool) (TInt) (TInt))))]
       ['=             (cons '= (TFun (basic-fun (TBool) (TInt) (TInt))))]
       ['integer->char (cons 'integer->char (TFun (basic-fun (TChar) (TNat))))]
