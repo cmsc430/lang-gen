@@ -422,6 +422,8 @@
                                                      (basic-fun (TNat) (TNat))))))]
       ['+             (cons '+ (TFun (case-fun (list (full-fun (TInt) '() '() (TInt))
                                                      (full-fun (TNat) '() '() (TNat))))))]
+      ['<             (cons '< (TFun (basic-fun (TBool) (TInt) (TInt))))]
+      ['=             (cons '= (TFun (basic-fun (TBool) (TInt) (TInt))))]
       ['integer->char (cons 'integer->char (TFun (basic-fun (TChar) (TNat))))]
       ['char->integer (cons 'char->integer (TFun (basic-fun (TNat) (TChar))))]
 
@@ -482,108 +484,4 @@
                      #:forms (list 'app 'if 'let 'let* 'cond))
      (build-env (list 'add1 'sub1 '+ '- 'zero? 'not))
      (TAny)))
-
-#|
-(begin-for-syntax
-  
-  (define-syntax-class value-type
-    (pattern (~or* (~datum 'integers)
-                   (~datum 'booleans)
-                   (~datum 'characters)
-                   (~datum 'eof))))
-
-  (define-syntax-class expr-form
-    (pattern (~or* (~datum 'app)
-                   (~datum 'if)
-                   (~datum 'cond)
-                   (~datum 'case)
-                   (~datum 'let1)
-                   (~datum 'let)
-                   (~datum 'let*)
-                   (~datum 'begin))))
-
-  (define-syntax-class expr-op
-    (pattern (~or* (~datum 'add1) (~datum 'sub1) (~datum 'abs)
-                   (~datum 'not) (~datum 'zero?)
-                   (~datum 'integer?) (~datum 'boolean?) (~datum 'char?)
-                   (~datum 'eof-object?)
-                   (~datum 'unary-) (~datum 'binary-) (~datum 'un/binary-)
-                   (~datum 'binary+) (~datum '+)
-                   (~datum 'integer->char) (~datum 'char->integer)))))
-
-(define-syntax (lookup-op stx)
-  (syntax-parse stx
-    [(_ (~datum 'add1)) #'(cons 'add1 (T-> (TInt) (TInt)))]
-    [(_ (~datum 'sub1)) #'(cons 'sub1 (T-> (TInt) (TInt)))]
-    [(_ (~datum 'abs)) #'(cons 'abs (T-> (TInt) (TInt)))]
-    [(_ (~datum 'not)) #'(cons 'not (T-> (TAny) (TBool)))]
-    [(_ (~datum 'zero?)) #'(cons 'zero? (T-> (TInt) (TBool)))]
-    [(_ (~datum 'integer?)) #'(cons 'integer? (T-> (TAny) (TBool)))]
-    [(_ (~datum 'boolean?)) #'(cons 'boolean? (T-> (TAny) (TBool)))]
-    [(_ (~datum 'char?)) #'(cons 'char? (T-> (TAny) (TBool)))]
-    [(_ (~datum 'eof-object?)) #'(cons 'eof-object? (T-> (TAny) (TBool)))]
-    [(_ (~datum 'unary-)) #'(cons '- (T-> (TInt) (TInt)))]
-    [(_ (~datum 'binary-)) #'(cons '- (T-> (TInt) (TInt) (TInt)))]
-    [(_ (~datum 'un/binary-)) #'(cons '- (T->* (list (TInt)) (list (TInt)) #f (TInt)))]
-    [(_ (~datum 'binary+)) #'(cons '+ (T-> (TInt) (TInt) (TInt)))]
-    [(_ (~datum '+)) #'(cons '+ (T->* '() '() (TInt) (TInt)))]
-    [(_ (~datum 'integer->char)) #'(cons 'integer->char (T-> (TInt) (TChar)))]
-    [(_ (~datum 'char->integer)) #'(cons 'char->integer (T-> (TChar) (TInt)))]))
-
-(define-syntax (lookup-type stx)
-  (syntax-parse stx
-    [(_ (~datum 'integers)) #'(TInt)]
-    [(_ (~datum 'booleans)) #'(TBool)]
-    [(_ (~datum 'characters)) #'(TChar)]
-    [(_ (~datum 'eof)) #'(TEOF)]))
-
-(define-syntax (lookup-form-freq stx)
-  (syntax-parse stx
-    [(_ size (~datum 'app)) #'(* 2 size)]
-    [(_ size (~datum 'if)) #'(quotient size 2)]
-    [(_ size (~datum 'let1)) #'size]
-    [(_ size (~datum 'let)) #'(quotient size 2)]
-    [(_ size (~datum 'let*)) #'(quotient size 2)]
-    [(_ size (~datum 'cond)) #'(quotient size 4)]
-    [(_ size (~datum 'case)) #'(quotient size 4)]
-    [(_ size (~datum 'begin)) #'(quotient size 2)]))
-  
-(define-syntax (lookup-form-gen stx)
-  (syntax-parse stx
-    [(_ (~datum 'app)) #'gen:app]
-    [(_ (~datum 'if)) #'gen:if]
-    [(_ (~datum 'let1)) #'gen:let1-exp]
-    [(_ (~datum 'let)) #'gen:let-exp]
-    [(_ (~datum 'let*)) #'gen:let*-exp]
-    [(_ (~datum 'cond)) #'gen:cond]
-    [(_ (~datum 'case)) #'gen:case]
-    [(_ (~datum 'begin)) #'gen:begin]))
-
-(define-syntax-rule (make-gen:expr k fs ...)
-  (lambda (env type)
-    (gen:no-shrink
-     (gen:sized
-      (lambda (size)
-        (gen:frequency
-         (cons (cons 1 (gen:simple-expr k env type))
-               (list (cons (lookup-form-freq size fs)
-                           ((lookup-form-gen fs) k env type))
-                     ...))))))))
-
-;; define a lambda that takes an env and a type
-;; inside that lambda is a letrec that defines gen:expr and all the forms
-;; also defines gen:base-type and gen:val based on #:values
-
-;; TODO: errors for incompatible choices
-(define-syntax (lang-generator stx)
-  (syntax-parse stx
-    [(_ #:values vts:value-type ...+
-        #:forms fs:expr-form ...
-        #:ops ops:expr-op ...)
-     #'(lambda (initial-env type)
-         (letrec ([gen:base-type (gen:one-of (list (lookup-type vts) ...))]
-                  [gen:expr (make-gen:expr k fs ...)]
-                  [k (knot gen:expr gen:base-type)])
-           (gen:expr (append initial-env (list (lookup-op ops) ...)) type)))]))
-|#
     
