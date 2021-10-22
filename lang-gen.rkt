@@ -58,7 +58,7 @@
 
 (define (prim1-form id arg result)
   (λ (k size env type)
-    (if (and (not (assoc id env)) (type-subsumes? type result))
+    (if (and (not (dict-has-key? env id)) (type-subsumes? type result))
         (cons size
               (gen:let
                ([e (gen:resize ((knot-expr k) env arg) (quotient size 2))])
@@ -67,7 +67,7 @@
 
 (define (prim2-form id arg1 arg2 result)
   (λ (k size env type)
-    (if (and (not (assoc id env)) (type-subsumes? type result))
+    (if (and (not (dict-has-key? env id)) (type-subsumes? type result))
         (cons size
               (gen:let
                ([e1 (gen:resize ((knot-expr k) env arg1) (quotient size 2))]
@@ -77,7 +77,7 @@
 
 (define (primN-form id args result)
   (λ (k size env type)
-    (if (and (not (assoc id env)) (type-subsumes? type result))
+    (if (and (not (dict-has-key? env id)) (type-subsumes? type result))
         (cons (* 2 size)
               (gen:let
                ([n (gen:map gen:natural (compose exact-ceiling sqrt))]
@@ -87,11 +87,20 @@
                `(,id ,@es)))
         #f)))
 
+(define if-zero?-form
+  (λ (k size env type)
+    (cons (quotient size 2)
+          (gen:let
+           ([e-pred (gen:resize ((knot-expr k) env (TInt)) (quotient size 5))]
+            [e-then (gen:resize ((knot-expr k) env type) (quotient (* size 2) 5))]
+            [e-else (gen:resize ((knot-expr k) env type) (quotient (* size 2) 5))])
+           `(if (zero? ,e-pred) ,e-then ,e-else)))))
+
 (define if-form
   (λ (k size env type)
     (cons (quotient size 2)
           (gen:let
-           ([pred-type (gen:one-of (list (TBool) (TAny)))]
+           ([pred-type (gen:one-of (cons (TAny) (make-list 3 (TBool))))]
             [e-pred (gen:resize ((knot-expr k) env pred-type) (quotient size 5))]
             [e-then (gen:resize ((knot-expr k) env type) (quotient (* size 2) 5))]
             [e-else (gen:resize ((knot-expr k) env type) (quotient (* size 2) 5))])
@@ -109,7 +118,7 @@
            `(let ([,id ,e1])
               ,e2)))))
 
-(define let-form
+(define let-form-naive
   (λ (k size env type)
     (cons size
           (gen:let
@@ -124,7 +133,7 @@
                      (quotient size (* 2 (add1 (length ids)))))])
            `(let ,(map list ids e-vals) ,e-body)))))
 
-(define let-form^
+(define let-form
   (λ (k size env type)
     (cons (quotient size 2)
           (gen:let
@@ -142,7 +151,7 @@
                         (quotient size (add1 (length used))))])
               `(let ,(map list (map car used) e-vals) ,e-body)))))))
 
-(define let*-form
+(define let*-form-naive
   (λ (k size env type)
     (cons (quotient size 3)
           (gen:let
@@ -186,7 +195,7 @@
            [rst (gen:let*-binds k env new-vars (set-union free (free-vars e-val)))])
           (cons (list id e-val) rst)))])))
 
-(define let*-form^
+(define let*-form
   (λ (k size env type)
     (cons (quotient size 3)
           (gen:let
@@ -203,7 +212,7 @@
     (cons (quotient size 4)
           (gen:let
            ([n (gen:map gen:natural (compose exact-floor sqrt))])
-           (let ([pred-gen (gen:resize (gen:bind (gen:one-of (list (TBool) (TBool) (TBool) (TAny)))
+           (let ([pred-gen (gen:resize (gen:bind (gen:one-of (cons (TAny) (make-list 3 (TBool))))
                                                  (λ (t) ((knot-expr k) env t)))
                                        (quotient size (* 4 (max 1 n))))]
                  [body-gen (gen:resize ((knot-expr k) env type)
@@ -237,7 +246,8 @@
   (λ (k size env type)
     (cons (quotient size 2)
           (gen:let
-           ([e1 (gen:resize ((knot-expr k) env (TAny)) (quotient size 4))]
+           ([t0 (gen:one-of (list (TAny) (TVoid)))]
+            [e1 (gen:resize ((knot-expr k) env t0) (quotient size 4))]
             [e2 (gen:resize ((knot-expr k) env type) (quotient (* 3 size) 4))])
            `(begin ,e1 ,e2)))))
 
@@ -329,7 +339,7 @@
 (define weaken-form
   (λ (k size env type)
     (if (not (TAny? type))
-        (cons (quotient size 8)
+        (cons (quotient size 4)
               ((knot-expr k) env (TAny)))
         #f)))
 
@@ -349,6 +359,40 @@
                                              n
                                              0)
                                          55295))))))
+        #f)))
+
+(define read-form
+  (λ (k size env type)
+    (cons size
+          (gen:let
+           ([id (gen:id env)]
+            [read-op (gen:one-of (list 'read-byte 'peek-byte))]
+            [e1 (gen:resize ((knot-expr k) (env-add id (TEOF) env) type)
+                            (quotient size 2))]
+            [e2 (gen:resize ((knot-expr k) (env-add id (TInt) env) type)
+                            (quotient size 2))])
+           `(let ([,id (,read-op)])
+              (if (eof-object? ,id)
+                  ,e1
+                  ,e2))))))
+
+(define write-form
+  (λ (k size env type)
+    (if (type-subsumes? type (TVoid))
+        (let ([env-candidates (filter-env (λ (t) (type-subsumes? (TInt) t)) env)])
+          (cons 1
+                (gen:frequency
+                 (list (cons 1 (gen:let ([n (gen:integer-in 0 255)])
+                                        `(write-byte ,n)))
+                       (cons (length env-candidates)
+                             (gen:let
+                              ([id (gen:map (gen:one-of env-candidates) car)]
+                               [e (gen:resize ((knot-expr k) env (TInt)) (quotient size 2))])
+                              `(if (< ,id 256)
+                                   (if (< -1 ,id)
+                                       (write-byte ,id)
+                                       (void))
+                                   (void))))))))
         #f)))
 
 (define form-table
@@ -387,14 +431,20 @@
 
    (cons 'box box-form)
    (cons 'unbox unbox-form)
-   
+
+   (cons 'if-zero? if-zero?-form)
    (cons 'if if-form)
    (cons 'let1 let1-form)
-   (cons 'let let-form^)
-   (cons 'let* let*-form^)
+   (cons 'let let-form)
+   (cons 'let* let*-form)
    (cons 'cond cond-form)
    (cons 'case case-form)
-   (cons 'begin begin-form)))
+   (cons 'begin begin-form)
+
+   (cons 'io-read read-form)
+   (cons 'io-write write-form)
+
+   (cons 'weaken weaken-form)))
 
 (define (build-gen:expr #:values vts #:forms fs)
   (letrec ([gen:expr (λ (env type)
@@ -407,7 +457,7 @@
            [gen:type (gen:no-shrink
                       (gen:delay
                        (apply gen:choice (map (λ (g) (g k)) type-gens))))]
-           [forms (map (λ (f) (cdr (assoc f form-table))) fs)]
+           [forms (map (λ (f) (dict-ref form-table f)) fs)]
            [type-gens (map type-gen vts)]
            [base-types (append-map type-base-types vts)]
            [k (knot gen:expr gen:type base-types)])
@@ -528,33 +578,6 @@
   (gen:bind (gen:base-type k quotable?)
             (λ (t) (gen:val k t))))
 
-(define (gen:read-op k env type)
-  (gen:sized
-   (λ (size)
-     (gen:let ([id gen:id]
-               [read-op (gen:one-of (list 'read-byte 'peek-byte))]
-               [e1 (gen:resize ((knot-expr k) (env-add id (TEOF) env) type)
-                               (quotient size 2))]
-               [e2 (gen:resize ((knot-expr k) (env-add id (TChar) env) type)
-                               (quotient size 2))])
-              `(let ([,id (,read-op)])
-                 (if (eof-object? ,id)
-                     ,e1
-                     ,e2))))))
-
-(define (gen:write-op k env type)
-  (gen:sized
-   (λ (size)
-     (gen:let ([id gen:id]
-               [e1 (gen:resize ((knot-expr k) env (TNat)) (quotient size 4))]
-               [e2 (gen:resize ((knot-expr k) env type) (quotient (* 3 size) 4))])
-              `(begin
-                 (let ([,id ,e1])
-                   (if (< ,id 256)
-                       (write-byte ,id)
-                       #f))
-                 ,e2)))))
-
 (define (type-gen t)
   (match t
     ['integers (λ (k) (gen:one-of (list (TInt) (TNat))))]
@@ -588,10 +611,4 @@
 
 (define box-ops
   '(box unbox box?))
-
-#;(define arith-lang
-    ((build-gen:expr #:values (list 'integers 'booleans)
-                     #:forms (list 'app 'if 'let 'let* 'cond))
-     (build-env (list 'add1 'sub1 '+ '- 'zero? 'not))
-     (TAny)))
     
