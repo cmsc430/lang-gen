@@ -1,7 +1,6 @@
 #lang racket
 
-(require (for-syntax syntax/parse)
-         rackcheck)
+(require "free.rkt" rackcheck)
 
 ;; thoughts:
 ;; * separate out the application of builtin primitives from generalized application?
@@ -79,7 +78,7 @@
 (define (primN-form id args result)
   (λ (k size env type)
     (if (and (not (assoc id env)) (type-subsumes? type result))
-        (cons size
+        (cons (* 2 size)
               (gen:let
                ([n (gen:map gen:natural (compose exact-ceiling sqrt))]
                 [es (gen:list-len (gen:resize ((knot-expr k) env args)
@@ -90,7 +89,7 @@
 
 (define if-form
   (λ (k size env type)
-    (cons size
+    (cons (quotient size 2)
           (gen:let
            ([pred-type (gen:one-of (list (TBool) (TAny)))]
             [e-pred (gen:resize ((knot-expr k) env pred-type) (quotient size 5))]
@@ -115,7 +114,7 @@
     (cons size
           (gen:let
            ([n (gen:integer-in 0 (exact-floor (sqrt size)))]
-            [ids (gen:map (gen:list-len gen:id n) remove-duplicates)]
+            [ids (gen:map (gen:list-len (gen:id env) n) remove-duplicates)]
             [val-types (gen:list-len (knot-type k) (length ids))]
             [e-vals (gen:resize
                      (gen:tuple* (map (curry (knot-expr k) env) val-types))
@@ -125,12 +124,30 @@
                      (quotient size (* 2 (add1 (length ids)))))])
            `(let ,(map list ids e-vals) ,e-body)))))
 
+(define let-form^
+  (λ (k size env type)
+    (cons (quotient size 2)
+          (gen:let
+           ([ids (gen:map (gen:list-len (gen:id env) (exact-floor (log (add1 size))))
+                          remove-duplicates)]
+            [val-types (gen:list-len (knot-type k) (length ids))]
+            [e-body (gen:resize
+                     ((knot-expr k) (env-add* ids val-types env) type)
+                     (quotient size 2))])
+           (let* ([free (free-vars e-body)]
+                  [used (filter (λ (m) (member (car m) free)) (map cons ids val-types))])
+             (gen:let
+              ([e-vals (gen:resize
+                        (gen:tuple* (map (curry (knot-expr k) env) (map cdr used)))
+                        (quotient size (add1 (length used))))])
+              `(let ,(map list (map car used) e-vals) ,e-body)))))))
+
 (define let*-form
   (λ (k size env type)
-    (cons size
+    (cons (quotient size 3)
           (gen:let
-           ([n (gen:map gen:natural (compose exact-floor sqrt))]
-            [ids (gen:list-len gen:id n)]
+           ([n (gen:map gen:natural (compose add1 exact-floor log add1))]
+            [ids (gen:list-len (gen:id env) n)]
             [val-types (gen:list-len (knot-type k) n)])
            (let ([envs (foldl (λ (id t acc)
                                 (cons (env-add id t (first acc)) acc))
@@ -144,12 +161,49 @@
                         (quotient size (* 2 (add1 n))))])
               `(let* ,(map list ids e-vals) ,e-body)))))))
 
+;; pick an id that is free in the body
+;; create a binding expression for it
+;; add the free variables in the generated expression to the free
+;; repeat until there are no ids that are free in the body
+
+(define (gen:let*-vars k env n)
+  (if (zero? n)
+      (gen:const '())
+      (gen:let
+       ([id (gen:id env)]
+        [type (knot-type k)]
+        [rst (gen:let*-vars k (env-add id type env) (sub1 n))])
+       (env-add id type rst))))
+
+(define (gen:let*-binds k env vars free)
+  (let ([var? (findf (λ (m) (member (car m) free)) vars)])
+    (match var?
+      [#f (gen:const '())]
+      [(cons id type)
+       (let ([new-vars (dict-remove vars id)])
+         (gen:let
+          ([e-val ((knot-expr k) (append new-vars env) type)]
+           [rst (gen:let*-binds k env new-vars (set-union free (free-vars e-val)))])
+          (cons (list id e-val) rst)))])))
+
+(define let*-form^
+  (λ (k size env type)
+    (cons (quotient size 3)
+          (gen:let
+           ([n (gen:map gen:natural (compose exact-floor log add1))]
+            [vars (gen:let*-vars k env n)]
+            [e-body (gen:resize ((knot-expr k) (append vars env) type)
+                                (quotient size 2))]
+            [binds (gen:resize (gen:let*-binds k env vars (free-vars e-body))
+                               (quotient size (* 2 (add1 n))))])
+           `(let* ,(reverse binds) ,e-body)))))
+
 (define cond-form
   (λ (k size env type)
     (cons (quotient size 4)
           (gen:let
            ([n (gen:map gen:natural (compose exact-floor sqrt))])
-           (let ([pred-gen (gen:resize (gen:bind (gen:one-of (list (TBool) (TAny)))
+           (let ([pred-gen (gen:resize (gen:bind (gen:one-of (list (TBool) (TBool) (TBool) (TAny)))
                                                  (λ (t) ((knot-expr k) env t)))
                                        (quotient size (* 4 (max 1 n))))]
                  [body-gen (gen:resize ((knot-expr k) env type)
@@ -228,6 +282,25 @@
                 (gen:let
                  ([x (gen:one-of (map car env-candidates))])
                  `(cdr ,x)))
+          #f))))
+
+(define discrim-list-form
+  (λ (k size env type)
+    (let ([env-candidates (filter-env (λ (t) (TList? t)) env)])
+      (if (not (empty? env-candidates))
+          (cons (* size (length env-candidates))
+                (gen:let
+                 ([m (gen:one-of env-candidates)]
+                  [e1 (gen:resize ((knot-expr k)
+                                   (env-add (car m) (TPair (TList-type (cdr m)) (cdr m)) env)
+                                   type)
+                                  (quotient size 2))]
+                  [e2 (gen:resize ((knot-expr k) (env-add (car m) (TEmpty) env) type)
+                                  (quotient size 2))]
+                  [dir gen:boolean])
+                 (if dir
+                     `(if (cons? ,(car m)) ,e1 ,e2)
+                     `(if (empty? ,(car m)) ,e2 ,e1))))
           #f))))
 
 (define box-form
@@ -310,14 +383,15 @@
    (cons 'cons cons-form)
    (cons 'car car-form)
    (cons 'cdr cdr-form)
+   (cons 'discrim-list discrim-list-form)
 
    (cons 'box box-form)
    (cons 'unbox unbox-form)
    
    (cons 'if if-form)
    (cons 'let1 let1-form)
-   (cons 'let let-form)
-   (cons 'let* let*-form)
+   (cons 'let let-form^)
+   (cons 'let* let*-form^)
    (cons 'cond cond-form)
    (cons 'case case-form)
    (cons 'begin begin-form)))
@@ -424,15 +498,31 @@
     [(TEOF) (gen:const 'eof)]
     ;; a bit of a hack, since void is technically a procedure
     [(TVoid) (gen:const '(void))]
-    [(TPair l r) (gen:let ([lv (gen:val k l)]
-                           [rv (gen:val k r)])
-                          `(cons ,lv ,rv))]
-    [(TList _) (gen:const ''())]
+    [(TPair l r) (gen:sized
+                  (λ (size)
+                    (gen:let ([lv (gen:resize (gen:val k l) (quotient size 2))]
+                              [rv (gen:resize (gen:val k r) (quotient size 2))])
+                             `(cons ,lv ,rv))))]
+    [(TList t) (gen:sized
+                (λ (size)
+                  (gen:frequency
+                   (list (cons 1 (gen:const ''()))
+                         (cons size (gen:let
+                                     ([v (gen:val k t)]
+                                      [vl (gen:resize (gen:val k (TList t))
+                                                      (quotient size 2))])
+                                     `(cons ,v ,vl)))))))]
     [(TEmpty) (gen:const ''())]
     [(TBot) (error "wat")]))
 
-(define gen:id
-  (gen:map gen:char-letter (compose string->symbol string)))
+(define (gen:id env)
+  (gen:frequency
+   (list (cons 1 (gen:let ([n (gen:integer-in 0 4)]
+                           [fst gen:char-letter]
+                           [rst (gen:list-len gen:char-alphanumeric n)])
+                          (string->symbol (list->string (cons fst rst)))))
+         (cons (quotient (length env) 4)
+               (gen:map (gen:one-of env) car)))))
 
 (define (gen:quotable k)
   (gen:bind (gen:base-type k quotable?)
@@ -475,9 +565,7 @@
     ['pairs (λ (k) (gen:let ([t1 (knot-type k)]
                              [t2 (knot-type k)])
                             (TPair t1 t2)))]
-    ['lists (λ (k) (gen:choice
-                    (gen:const (TEmpty))
-                    (gen:map (knot-type k) TList)))]))
+    ['lists (λ (k) (gen:map (knot-type k) TList))]))
 
 (define (type-base-types t)
   (match t
