@@ -19,21 +19,17 @@
                 (free-vars e2)
                 (free-vars e3))]
     [`(let ([,ids ,e-vals] ...) ,e-body)
-     (set-union (apply set-union '() (map free-vars e-vals))
-                (set-subtract (free-vars e-body) ids))]
+     (apply set-union (set-subtract (free-vars e-body) ids) (map free-vars e-vals))]
     [`(let* ([,id ,e-val] [,ids ,e-vals] ...) ,e-body)
      (free-vars `(let ([,id ,e-val])
                    (let* ,(map list ids e-vals) ,e-body)))]
     [`(let* () ,e-body)
      (free-vars e-body)]
     [`(cond [,e-preds ,e-bodies] ... [else ,e-else])
-     (set-union (apply set-union '() (map free-vars e-preds))
-                (apply set-union '() (map free-vars e-bodies))
-                (free-vars e-else))]
+     (apply set-union (free-vars e-else) (map free-vars (append e-preds e-bodies)))]
     [`(case ,e-pred [(,vals ...) ,e-bodies] ... [else ,e-else])
-     (set-union (free-vars e-pred)
-                (apply set-union '() (map free-vars e-bodies))
-                (free-vars e-else))]
+     (apply set-union (free-vars e-pred) (free-vars e-else)
+            (map free-vars e-bodies))]
     [`(begin ,e1 ,e2) (set-union (free-vars e1) (free-vars e2))]
     [(list (? symbol? p) e-args ...)
      (apply set-union '() (map free-vars e-args))]))
