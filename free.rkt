@@ -10,6 +10,16 @@
       (equal? '(void) v)
       (equal? ''() v)))
 
+(define (primop? p)
+  (set-member?
+   '(add1 sub1 abs - + < = zero? not
+     integer? boolean? char? eof-object? cons? empty? box?
+     char->integer integer->char
+     cons car cdr
+     box unbox
+     read-byte peek-byte write-byte)
+   p))
+
 (define (free-vars e)
   (match e
     [(? value? v) empty]
@@ -31,5 +41,7 @@
      (apply set-union (free-vars e-pred) (free-vars e-else)
             (map free-vars e-bodies))]
     [`(begin ,e1 ,e2) (set-union (free-vars e1) (free-vars e2))]
-    [(list (? symbol? p) e-args ...)
-     (apply set-union '() (map free-vars e-args))]))
+    [(list (? primop? p) e-args ...)
+     (apply set-union '() (map free-vars e-args))]
+    [(list (? symbol? id) e-args ...)
+     (apply set-union (list id) (map free-vars e-args))]))

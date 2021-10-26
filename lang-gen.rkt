@@ -2,6 +2,9 @@
 
 (require "free.rkt" rackcheck)
 
+(define gen:tuple* (curry apply gen:tuple))
+(define gen:list-len (compose gen:tuple* make-list))
+
 ;; thoughts:
 ;; * separate out the application of builtin primitives from generalized application?
 ;; * how to handle read-byte
@@ -42,9 +45,11 @@
 
 (struct TBox (type) #:prefab)
 
+(struct TFun (domain rest? codomain) #:prefab)
+
 (define var-form
   (λ (k size env type)
-    (let ([env-candidates (filter-env (λ (t) (type-subsumes? type t)) env)])
+    (let ([env-candidates (filter-env (λ (t) (and (not (TFun? t)) (type-subsumes? type t))) env)])
       (if (not (empty? env-candidates))
           (cons (length env-candidates)
                 (gen:one-of (map car env-candidates)))
@@ -54,6 +59,12 @@
   (λ (k size env type)
     (if (type-subsumes? type val-type)
         (cons 1 val-gen)
+        #f)))
+
+(define (prim0-form id result)
+  (λ (k size env type)
+    (if (and (not (dict-has-key? env id)) (type-subsumes? type result))
+        (cons 1 `(,id))
         #f)))
 
 (define (prim1-form id arg result)
@@ -81,9 +92,8 @@
         (cons (* 2 size)
               (gen:let
                ([n (gen:map gen:natural (compose exact-ceiling sqrt))]
-                [es (gen:list-len (gen:resize ((knot-expr k) env args)
-                                              (quotient size (add1 n)))
-                                  n)])
+                [es (gen:list-len n (gen:resize ((knot-expr k) env args)
+                                                (quotient size (add1 n))))])
                `(,id ,@es)))
         #f)))
 
@@ -123,8 +133,8 @@
     (cons size
           (gen:let
            ([n (gen:integer-in 0 (exact-floor (sqrt size)))]
-            [ids (gen:map (gen:list-len (gen:id env) n) remove-duplicates)]
-            [val-types (gen:list-len (knot-type k) (length ids))]
+            [ids (gen:map (gen:list-len n (gen:id env)) remove-duplicates)]
+            [val-types (gen:list-len (length ids) (knot-type k))]
             [e-vals (gen:resize
                      (gen:tuple* (map (curry (knot-expr k) env) val-types))
                      (quotient size (* 4 (add1 (length ids)))))]
@@ -135,11 +145,10 @@
 
 (define let-form
   (λ (k size env type)
-    (cons (quotient size 2)
+    (cons (if (<= size 4) 0 size)
           (gen:let
-           ([ids (gen:map (gen:list-len (gen:id env) (exact-floor (log (add1 size))))
-                          remove-duplicates)]
-            [val-types (gen:list-len (knot-type k) (length ids))]
+           ([ids (gen:unique-ids env (add1 (exact-floor (log (add1 size)))))]
+            [val-types (gen:list-len (length ids) (knot-type k))]
             [e-body (gen:resize
                      ((knot-expr k) (env-add* ids val-types env) type)
                      (quotient size 2))])
@@ -156,8 +165,8 @@
     (cons (quotient size 3)
           (gen:let
            ([n (gen:map gen:natural (compose add1 exact-floor log add1))]
-            [ids (gen:list-len (gen:id env) n)]
-            [val-types (gen:list-len (knot-type k) n)])
+            [ids (gen:list-len n (gen:id env))]
+            [val-types (gen:list-len n (knot-type k))])
            (let ([envs (foldl (λ (id t acc)
                                 (cons (env-add id t (first acc)) acc))
                               (list env) ids val-types)])
@@ -185,7 +194,7 @@
        (env-add id type rst))))
 
 (define (gen:let*-binds k env vars free)
-  (let ([var? (findf (λ (m) (member (car m) free)) vars)])
+  (let ([var? (findf (λ (m) (set-member? free (car m))) vars)])
     (match var?
       [#f (gen:const '())]
       [(cons id type)
@@ -197,7 +206,7 @@
 
 (define let*-form
   (λ (k size env type)
-    (cons (quotient size 3)
+    (cons (if (<= size 4) 0 size)
           (gen:let
            ([n (gen:map gen:natural (compose exact-floor log add1))]
             [vars (gen:let*-vars k env n)]
@@ -218,8 +227,8 @@
                  [body-gen (gen:resize ((knot-expr k) env type)
                                        (quotient (* size 3) (* 4 (max 1 n))))])
              (gen:let
-              ([e-preds (gen:list-len pred-gen n)]
-               [e-bodies (gen:list-len body-gen n)]
+              ([e-preds (gen:list-len n pred-gen)]
+               [e-bodies (gen:list-len n body-gen)]
                [e-else body-gen])
               `(cond ,@(map (λ (p b) `[,p ,b]) e-preds e-bodies)
                      [else ,e-else])))))))
@@ -234,8 +243,8 @@
                  [body-gen (gen:resize ((knot-expr k) env type)
                                        (quotient (* size 3) (* 4 (max 1 n))))])
              (gen:let
-              ([datums (gen:list-len datum-gen n)]
-               [e-bodies (gen:list-len body-gen n)]
+              ([datums (gen:list-len n datum-gen)]
+               [e-bodies (gen:list-len n body-gen)]
                [e-pred (gen:resize ((knot-expr k) env (TAny))
                                    (quotient size (* 4 (max 1 n))))]
                [e-else body-gen])
@@ -395,9 +404,22 @@
                                    (void))))))))
         #f)))
 
+(define app-form
+  (λ (k size env type)
+    (let ([env-candidates (filter-env (λ (t) (type-subsumes? (TFun '() (TBot) type) t)) env)])
+      (if (not (empty? env-candidates))
+          (cons (* size (length env-candidates))
+                (gen:let ([m (gen:one-of env-candidates)]
+                          [dom (gen:function-domain (TFun-domain (cdr m)) (TFun-rest? (cdr m)))]
+                          [args (gen:resize (gen:tuple* (map (λ (t) ((knot-expr k) env t)) dom))
+                                            (quotient size (add1 (length dom))))])
+                         `(,(car m) ,@args)))
+          #f))))
+
 (define form-table
   (list
    (cons 'var var-form)
+   (cons 'app app-form)
    
    (cons 'add1 (prim1-form 'add1 (TInt) (TInt)))
    (cons 'sub1 (prim1-form 'sub1 (TInt) (TInt)))
@@ -461,7 +483,70 @@
            [type-gens (map type-gen vts)]
            [base-types (append-map type-base-types vts)]
            [k (knot gen:expr gen:type base-types)])
-    gen:expr))
+    (values gen:expr gen:type)))
+
+(define (gen:define gen:expr gen:type env id)
+  (gen:let
+   ([n (gen:map gen:natural (compose exact-floor log add1))]
+    [args (gen:unique-ids env n)]
+    [domain (gen:list-len n gen:type)]
+    [codomain gen:type]
+    [e-body (gen:expr (env-add* args domain env) codomain)])
+   (let* ([free (free-vars e-body)]
+          [used (filter (λ (m) (set-member? free (car m))) (map cons args domain))])
+     (list
+      (TFun (map cdr used) #f codomain)
+      `(define (,id ,@(map car used))
+         ,e-body)))))
+
+(define (gen:defines gen:expr gen:type env ids)
+  (match ids
+    ['() (gen:const '())]
+    [(cons id rst)
+     (gen:let
+      ([def (gen:define gen:expr gen:type env id)]
+       [defs (gen:defines gen:expr gen:type (env-add id (first def) env) rst)])
+      (cons def defs))]))
+
+(define (gen:tfun gen:type)
+  (gen:let
+   ([t1 gen:type]
+    [t2 gen:type])
+   (TFun (list t1) #f t2)))
+
+(define (gen:define-binds gen:expr vars free)
+  (let ([var? (findf (λ (m) (set-member? free (car m))) vars)])
+    (match var?
+      [#f (gen:const '())]
+      [(cons id type)
+       (let ([new-vars (dict-remove vars id)])
+         (gen:let
+          ([args (gen:unique-ids new-vars (length (TFun-domain type)))]
+           [e-body (gen:expr (env-add* args (TFun-domain type) new-vars) (TFun-codomain type))]
+           [rst (gen:define-binds gen:expr new-vars
+                                  (set-union free (set-remove (free-vars e-body) args)))])
+          (cons `(define (,id ,@args) ,e-body) rst)))])))
+
+(define (gen:program^ gen:expr gen:type type)
+  (gen:let
+   ([n (gen:map gen:natural (compose exact-floor sqrt add1))]
+    [ids (gen:unique-ids '() n)]
+    [defs (gen:defines gen:expr gen:type '() ids)]
+    [e (gen:expr (map (λ (id def) (cons id (first def))) ids defs) type)])
+   `(,@(map second defs) ,e)))
+
+(define (gen:program gen:expr gen:type type)
+  (gen:sized
+   (λ (size)
+     (gen:let
+      ([n (gen:map gen:natural (compose exact-floor sqrt add1))]
+       [ids (gen:unique-ids '() n)]
+       [tfs (gen:list-len n (gen:tfun gen:type))]
+       [e (gen:expr (map cons ids tfs) type)]
+       [defs (gen:resize (gen:define-binds gen:expr (map cons ids tfs) (free-vars e))
+                         (quotient size (add1 n)))])
+      `(,@defs
+        ,e)))))
 
 (define (quotable? t)
   (match t
@@ -497,9 +582,24 @@
 
     [((TBox t1) (TBox t2)) (type-subsumes? t1 t2)]
 
-    #;[((TFun d1 d1-opt d1-rest? c1) (TFun d2 d2-opt d2-rest? c2))
+    [((TFun d1 d1-rest? c1) (TFun d2 d2-rest? c2))
      (and (type-subsumes? c1 c2)
-          (domain-subsumes? t2 t1))]
+          (cond
+            [(= (length d1) (length d2)) (andmap type-subsumes? d2 d1)]
+            [(< (length d1) (length d2))
+             (match d1-rest?
+               [#f #f]
+               [d1-rest
+                (let-values ([(d2-l d2-r) (split-at d2 (length d1))])
+                  (and (andmap type-subsumes? d2-l d1)
+                       (andmap (curryr type-subsumes? d1-rest) d2-r)))])]
+            [else
+             (match d2-rest?
+               [#f #f]
+               [d2-rest
+                (let-values ([(d1-l d1-r) (split-at d1 (length d2))])
+                  (and (andmap type-subsumes? d2 d1-l)
+                       (andmap (curry type-subsumes? d2-rest) d1-r)))])]))]
     
     [(_ _) #f]))
 
@@ -565,18 +665,41 @@
     [(TEmpty) (gen:const ''())]
     [(TBot) (error "wat")]))
 
+;; TODO: don't generate primop ids
 (define (gen:id env)
   (gen:frequency
    (list (cons 1 (gen:let ([n (gen:integer-in 0 4)]
                            [fst gen:char-letter]
-                           [rst (gen:list-len gen:char-alphanumeric n)])
+                           [rst (gen:list-len n gen:char-alphanumeric)])
                           (string->symbol (list->string (cons fst rst)))))
          (cons (quotient (length env) 4)
                (gen:map (gen:one-of env) car)))))
 
+;; TODO: this algorithm is cursed
+(define (gen:unique-ids env n)
+  (if (zero? n)
+      (gen:const '())
+      (gen:let
+       ([ids (gen:unique-ids env (sub1 n))])
+       (let loop ()
+         (gen:let
+          ([id (gen:id env)])
+          (if (set-member? ids id)
+              (loop)
+              (gen:const (cons id ids))))))))
+
 (define (gen:quotable k)
   (gen:bind (gen:base-type k quotable?)
             (λ (t) (gen:val k t))))
+
+(define (gen:function-domain domain rest?)
+  (match rest?
+    [#f (gen:const domain)]
+    [rst (gen:sized
+          (λ (size)
+            (gen:let ([n (gen:integer-in 0 (exact-floor (sqrt size)))])
+                     (append domain
+                             (make-list n rst)))))]))
 
 (define (type-gen t)
   (match t
@@ -601,7 +724,7 @@
     ['lists (list (TEmpty))]))
 
 (define arith-ops
-  '(add1 sub1 abs + un/binary- zero? integer?))
+  '(add1 sub1 abs + unary- binary- zero? integer?))
 
 (define char-ops
   '(integer->char char->integer char?))
