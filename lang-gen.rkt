@@ -19,7 +19,7 @@
 
 (provide build-gen:expr
          (struct-out TAny)
-         (struct-out TBot)
+         (struct-out TNone)
          (struct-out TVoid)
          (struct-out TInt)
          (struct-out TNat)
@@ -29,7 +29,7 @@
 
 ;; Type Structs
 (struct TAny () #:prefab)
-(struct TBot () #:prefab)
+(struct TNone () #:prefab)
 
 (struct TInt () #:prefab)
 (struct TNat () #:prefab)
@@ -262,7 +262,7 @@
 
 (define cons-form
   (λ (k size env type)
-    (if (type-subsumes? type (TPair (TBot) (TBot)))
+    (if (type-subsumes? type (TPair (TNone) (TNone)))
         (cons size
               (match type
                 [(TAny)
@@ -324,7 +324,7 @@
 
 (define box-form
   (λ (k size env type)
-    (if (type-subsumes? type (TBox (TBot)))
+    (if (type-subsumes? type (TBox (TNone)))
         (cons size
               (gen:let
                   ([e (gen:resize ((knot-expr k) env
@@ -406,7 +406,7 @@
 
 (define app-form
   (λ (k size env type)
-    (let ([env-candidates (filter-env (λ (t) (type-subsumes? (TFun '() (TBot) type) t)) env)])
+    (let ([env-candidates (filter-env (λ (t) (type-subsumes? (TFun '() (TNone) type) t)) env)])
       (if (not (empty? env-candidates))
           (cons (* size (length env-candidates))
                 (gen:let ([m (gen:one-of env-candidates)]
@@ -559,15 +559,15 @@
   (match* (t1 t2)
     ;; Any subsumes all
     [((TAny) _) #t]
-    ;; All subsumes Bot
-    [(_ (TBot)) #t]
+    ;; all subsumes None
+    [(_ (TNone)) #t]
 
     ;; Reflexivity
     [(t t) #t]
 
     ;; Short-circuit these cases after reflexivity.
     [(_ (TAny)) #f]
-    [((TBot) _) #f]
+    [((TNone) _) #f]
 
     ;; Integers subsume the naturals
     [((TInt) (TNat)) #t]
@@ -663,7 +663,7 @@
                                                       (quotient size 2))])
                                      `(cons ,v ,vl)))))))]
     [(TEmpty) (gen:const ''())]
-    [(TBot) (error "wat")]))
+    [(TNone) (error "wat")]))
 
 ;; TODO: don't generate primop ids
 (define (gen:id env)
